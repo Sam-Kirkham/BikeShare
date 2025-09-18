@@ -39,98 +39,76 @@ plot4
 (plot1 + plot2) / (plot3 + plot4)
 
 
-# Data Cleaning Section
 
+# Data Cleaning
 train <- train_data |>
   select(-casual, - registered) |>
   mutate(log_count = log(count + 1)) |>
   select(-count)
 
 # Recipe Creation           
-my_recipe <- recipe(log_count~., data=train) %>% 
-step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
-step_mutate(weather = factor(weather, levels=c(1,2,3), labels=c("clear", "cloudy", "severe"))) %>%
-step_mutate(season = factor(season, levels=c(1,2,3,4), labels=c("spring", "summer", "fall", "winter"))) %>%
-step_mutate(holiday = factor(holiday, levels=c(0,1), labels=c("no", "yes"))) %>%
-step_mutate(workingday = factor(workingday, levels=c(0,1), labels=c("no", "yes"))) %>%
-step_date(datetime, features="dow") %>% 
-step_time(datetime, features=c("hour", "minute")) %>%
-step_dummy(all_nominal_predictors()) %>% 
-step_normalize(all_numeric_predictors())
+my_recipe <- recipe(log_count ~ ., data = train) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_mutate(weather = as.factor(weather),
+              season = as.factor(season),
+              holiday = as.factor(holiday),
+              workingday = as.factor(workingday)) %>%
+  step_date(datetime, features = "dow") %>%
+  step_time(datetime, features = c("hour")) %>%
+  step_rm(datetime) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors())
 prepped_recipe <- prep(my_recipe)
 bake(prepped_recipe, new_data=train)
 test <- bake(prepped_recipe, new_data = test_data)
 
-# Penalized Regression, keep penalty really small
-preg_model <- linear_reg(penalty=1, mixture=.5) %>% 
-set_engine("glmnet") 
+
+preg_model <- linear_reg(penalty=tune(),
+                         mixture=tune()) %>% 
+  set_engine("glmnet") 
 preg_wf <- workflow() %>%
-add_recipe(my_recipe) %>%
-add_model(preg_model) %>%
-fit(data=train)
-bike_predictions <- predict(preg_wf, new_data=test_data)
-bike_predictions
-
-# Linear Regression
-my_linear_model <- linear_reg() %>% 
-set_engine("lm") %>% 
-set_mode("regression") %>% 
-fit(formula=log_count~., data=train)
-bike_predictions <- predict(my_linear_model,
-                            new_data=test_data) 
-bike_predictions 
-
-# Kaggle Submission
-kaggle_submission <- bike_predictions %>%
-bind_cols(., test) %>%
-mutate(count = pmax(0, expm1(.pred))) %>%  
-select(datetime, count) %>%                
-mutate(datetime = as.character(format(datetime))) 
-vroom_write(kaggle_submission, file = "./LinearPreds.csv", delim = ",")
-
-head(test, n = 5)
+  add_recipe(my_recipe) %>%
+  add_model(preg_model)
+grid_of_tuning_params <- grid_regular(penalty(),
+                                      mixture(),
+                                      levels = 5) 
+folds <- vfold_cv(train, v = 5, repeats=1)
 
 
-# Step 1: Prepare Training Data
-train <- train_data |>
-  select(-casual, -registered) |>
-  mutate(log_count = log(count + 1)) |>
-  select(-count)
+CV_results <- preg_wf %>%
+  tune_grid(resamples=folds,
+            grid=grid_of_tuning_params,
+            metrics=metric_set(rmse, mae))
 
-# Step 2: Create Recipe
-my_recipe <- recipe(log_count ~ ., data = train) %>%
-  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
-  step_mutate(weather = factor(weather, levels = c(1,2,3), labels = c("clear", "cloudy", "severe"))) %>%
-  step_mutate(season = factor(season, levels = c(1,2,3,4), labels = c("spring", "summer", "fall", "winter"))) %>%
-  step_mutate(holiday = factor(holiday, levels = c(0,1), labels = c("no", "yes"))) %>%
-  step_mutate(workingday = factor(workingday, levels = c(0,1), labels = c("no", "yes"))) %>%
-  step_date(datetime, features = "dow") %>%
-  step_time(datetime, features = c("hour", "minute")) %>%
-  step_rm(datetime) %>%                    # <-- Fix 1: Remove non-numeric datetime
-  step_zv() %>%                            # <-- Fix 2: Remove zero-variance columns
-  step_dummy(all_nominal_predictors()) %>%
-  step_normalize(all_numeric_predictors())
 
-# Step 3: Preprocess and bake manually (optional, but not necessary for workflow)
-prepped_recipe <- prep(my_recipe)
-bake(prepped_recipe, new_data = train)
-test <- bake(prepped_recipe, new_data = test_data)
+#show_notes(CV_results)
+collect_metrics(CV_results) %>% 
+  filter(.metric=="rmse") %>%
+  ggplot(data=., aes(x=penalty, y=mean, color=factor(mixture))) +
+  geom_line()
+bestTune <- CV_results %>%
+  select_best(metric="rmse")
 
-# Step 4: Define Model
-preg_model <- linear_reg(penalty = 1, mixture = .5) %>%
+
+final_wf <-preg_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=train)
+final_wf %>%
+  predict(new_data = test_data)
+
+# Penalized Regression
+preg_model <- linear_reg(penalty=.01, mixture=0) %>%
   set_engine("glmnet")
-
-# Step 5: Workflow
 preg_wf <- workflow() %>%
   add_recipe(my_recipe) %>%
   add_model(preg_model) %>%
-  fit(data = train)
+  fit(data=train)
+bike_predictions <- predict(preg_wf, new_data=test_data)
+bike_predictions
 
-# Step 6: Predict
-bike_predictions <- predict(preg_wf, new_data = test_data)
-
-# Step 7: (Optional) Back-transform log predictions to original scale
-bike_predictions <- bike_predictions %>%
-  mutate(count = exp(.pred) - 1)
-
-
+kaggle_submission <- bike_predictions %>%
+  bind_cols(., test_data) %>%
+  mutate(count = pmax(0, expm1(.pred))) %>%  
+  select(datetime, count) %>%
+  mutate(datetime = as.character(format(datetime))) 
+vroom_write(kaggle_submission, file = "./LinearPreds.csv", delim = ",")
