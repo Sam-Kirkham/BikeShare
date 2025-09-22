@@ -147,6 +147,47 @@ final_wf <-tree_wf %>%
 bike_predictions <- final_wf %>%
   predict(new_data = test_data)
 
+############################################################################
+
+# Random Forest Workflow
+install.packages("rpart")
+install.packages("ranger")
+
+forest_mod <- rand_forest(mtry = tune(),
+                          min_n=tune(),
+                          trees=1000) %>% 
+  set_engine("ranger") %>% 
+  set_mode("regression")
+
+
+# Create a workflow with model & recipe
+forest_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(forest_mod)
+
+grid_of_tuning_params <- grid_regular(mtry(range = c(1, 10)),
+                                      min_n(range = c(2,20)),
+                                      levels = 5)
+
+folds <- vfold_cv(train, v = 5, repeats=1)
+
+# Set up grid of tuning values
+
+CV_results <- forest_wf %>%
+  tune_grid(resamples=folds,
+            grid=grid_of_tuning_params,
+            metrics=metric_set(rmse, mae))
+
+# Set up K-fold CV
+bestTune <- CV_results %>%
+  select_best(metric="rmse")
+
+# Finalize workflow and predict
+final_wf <-forest_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=train)
+bike_predictions <- final_wf %>%
+  predict(new_data = test_data)
 
 ############################################################################
 
