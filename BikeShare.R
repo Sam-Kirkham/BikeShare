@@ -24,9 +24,10 @@ train_data$season <- factor(train_data$season)
 ############################################################################
 
 # Data Cleaning
-train_data <- train_data |>
-  select(-casual) |>
-  select(-registered)
+train <- train_data |>
+  select(-casual, - registered) |>
+  mutate(log_count = log(count + 1)) |>
+  select(-count)
 
 ############################################################################
 
@@ -184,6 +185,80 @@ bestTune <- CV_results %>%
 
 # Finalize workflow and predict
 final_wf <-forest_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=train)
+bike_predictions <- final_wf %>%
+  predict(new_data = test_data)
+
+############################################################################
+
+# Boost Model
+library(bonsai)
+library(lightgbm)
+boost_model <- boost_tree(tree_depth=tune(),
+                          trees=tune(),
+                          learn_rate=tune()) %>%
+  set_engine("lightgbm") %>%
+  set_mode("regression")
+
+boost_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(boost_model)
+
+grid_of_tuning_params <- grid_regular(tree_depth(),
+                                      trees(),
+                                      learn_rate(),
+                                      levels = 5)
+
+folds <- vfold_cv(train, v = 5, repeats=1)
+
+# Set up grid of tuning values
+
+CV_results <- boost_wf %>%
+  tune_grid(resamples=folds,
+            grid=grid_of_tuning_params,
+            metrics=metric_set(rmse, mae))
+
+# Set up K-fold CV
+bestTune <- CV_results %>%
+  select_best(metric="rmse")
+
+# Finalize workflow and predict
+final_wf <-boost_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=train)
+bike_predictions <- final_wf %>%
+  predict(new_data = test_data)
+
+############################################################################
+
+# Bart Model
+bart_model <- bart(trees=tune()) %>% 
+  set_engine("dbarts") %>% 
+  set_mode("regression")
+
+bart_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(bart_model)
+
+grid_of_tuning_params <- grid_regular(trees(),
+                                      levels = 5)
+
+folds <- vfold_cv(train, v = 5, repeats=1)
+
+# Set up grid of tuning values
+
+CV_results <- bart_wf %>%
+  tune_grid(resamples=folds,
+            grid=grid_of_tuning_params,
+            metrics=metric_set(rmse, mae))
+
+# Set up K-fold CV
+bestTune <- CV_results %>%
+  select_best(metric="rmse")
+
+# Finalize workflow and predict
+final_wf <-bart_wf %>%
   finalize_workflow(bestTune) %>%
   fit(data=train)
 bike_predictions <- final_wf %>%
