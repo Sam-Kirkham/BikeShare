@@ -266,6 +266,24 @@ bike_predictions <- final_wf %>%
 
 ############################################################################
 
+#Stacking Model with H2O.ai
+library(agua)
+h2o::h2o.init()
+
+auto_model <- auto_ml() %>%
+  set_engine("h2o", max_models = 5) %>%
+  set_mode("regression")
+
+automl_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(auto_model) %>%
+  fit(data = train)
+
+bike_predictions <- automl_wf %>%
+  predict(new_data = test_data)
+
+############################################################################
+
 kaggle_submission <- bike_predictions %>%
   bind_cols(., test_data) %>%
   mutate(count = pmax(0, expm1(.pred))) %>%  
