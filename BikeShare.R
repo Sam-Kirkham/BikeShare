@@ -61,14 +61,26 @@ my_recipe <- recipe(log_count ~ ., data = train) %>%
               season = as.factor(season),
               holiday = as.factor(holiday),
               workingday = as.factor(workingday)) %>%
-  step_date(datetime, features = "dow") %>%
-  step_time(datetime, features = c("hour")) %>%
-  step_rm(datetime) %>%
+  step_time(datetime, features = "hour") %>%
+  step_date(datetime, features = c("month", "year")) %>%
+  step_mutate(hour = as.factor(datetime_hour)) %>%
+  step_rm(datetime, datetime_hour) %>%
   step_dummy(all_nominal_predictors()) %>%
+  step_interact(terms = ~ starts_with("hour_"):starts_with("workingday_")) %>%
+  step_interact(terms = ~ datetime_year:starts_with("workingday_")) %>%
   step_normalize(all_numeric_predictors())
 prepped_recipe <- prep(my_recipe)
 bake(prepped_recipe, new_data=train)
 test <- bake(prepped_recipe, new_data = test_data)
+
+###########################################################################
+
+# Baked for Data Robot
+
+train_baked <- bake(prepped_recipe, new_data = train_data)
+test_baked <- bake(prepped_recipe, new_data = test_data)
+vroom_write(train_baked, "data_robot_train_data.csv", delim = ",")
+vroom_write(test_baked, "data_robot_test_data.csv", delim = ",")
 
 ############################################################################
 
